@@ -4,7 +4,7 @@ const express = require('express');
 const app = express();
 app.use(express.json());
 
-// Configuração do Puppeteer para rodar no Render
+// Configuração do Puppeteer para Render
 const client = new Client({
   puppeteer: {
     args: ['--no-sandbox', '--disable-setuid-sandbox']
@@ -28,4 +28,6 @@ app.post('/enviar', async (req, res) => {
   }
 });
 
-app.listen(3000, () => console.log('Servidor rodando na porta 3000'));
+// Usar a porta definida pelo Render
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
