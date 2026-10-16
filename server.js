@@ -1,6 +1,7 @@
 
 const { Client, MessageMedia } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
+const qrcodeTerminal = require('qrcode-terminal');
+const QRCode = require('qrcode');
 const express = require('express');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
@@ -8,18 +9,102 @@ const fs = require('fs');
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
-// Localiza o Chrome instalado pelo Puppeteer
+// Verifica o Chrome instalado pelo Puppeteer
 const chromePath = puppeteer.executablePath();
 
 console.log('Caminho do Chrome:', chromePath);
 console.log('Chrome existe:', fs.existsSync(chromePath));
 
 if (!fs.existsSync(chromePath)) {
-  console.error(
-    'Chrome não encontrado. Verifique o package.json e o arquivo .puppeteerrc.cjs.'
-  );
-  process.exit(1);
+  throw new Error(`Chrome não encontrado: ${chromePath}`);
 }
+
+// Guarda o QR Code atual temporariamente
+let qrAtual = null;
+let whatsappConectado = false;
+
+// Página inicial
+app.get('/', (req, res) => {
+  res.status(200).send('Servidor WhatsApp ativo.');
+});
+
+// Página protegida para exibir o QR Code
+app.get('/qr', async (req, res) => {
+  const token = process.env.QR_TOKEN;
+
+  if (!token || req.query.token !== token) {
+    return res.status(401).send('Acesso não autorizado.');
+  }
+
+  if (whatsappConectado) {
+    return res.send(`
+      <!DOCTYPE html>
+      <html lang="pt-BR">
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>WhatsApp conectado</title>
+      <body style="font-family:Arial;text-align:center;padding:30px">
+        <h2>WhatsApp conectado!</h2>
+        <p>Seu dispositivo já está autenticado.</p>
+      </body>
+      </html>
+    `);
+  }
+
+  if (!qrAtual) {
+    return res.status(503).send(`
+      <html lang="pt-BR">
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <meta http-equiv="refresh" content="5">
+      <body style="font-family:Arial;text-align:center;padding:30px">
+        <h2>Aguardando QR Code...</h2>
+        <p>A página será atualizada automaticamente.</p>
+      </body>
+      </html>
+    `);
+  }
+
+  try {
+    const imagem = await QRCode.toDataURL(qrAtual, {
+      width: 350,
+      margin: 2
+    });
+
+    res.setHeader('Cache-Control', 'no-store');
+
+    return res.send(`
+      <!DOCTYPE html>
+      <html lang="pt-BR">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta http-equiv="refresh" content="20">
+        <title>Conectar WhatsApp</title>
+      </head>
+      <body style="font-family:Arial;text-align:center;padding:20px">
+        <h2>Conectar WhatsApp</h2>
+        <p>Abra o WhatsApp no celular e escaneie este código.</p>
+        <img src="${imagem}" alt="QR Code do WhatsApp"
+             style="width:100%;max-width:350px;height:auto">
+        <p>O código pode expirar. Se necessário, atualize a página.</p>
+      </body>
+      </html>
+    `);
+  } catch (error) {
+    console.error('Erro ao gerar QR Code:', error);
+    return res.status(500).send('Erro ao gerar a imagem do QR Code.');
+  }
+});
+
+// Estado do servidor
+app.get('/status', (req, res) => {
+  res.json({
+    servidor: 'online',
+    whatsapp: whatsappConectado ? 'conectado' : 'aguardando conexão',
+    qrDisponivel: Boolean(qrAtual)
+  });
+});
 
 // Inicializa o cliente do WhatsApp
 const client = new Client({
@@ -34,56 +119,53 @@ const client = new Client({
   }
 });
 
-// Eventos do WhatsApp
+// Recebe novos QR Codes
 client.on('qr', qr => {
-  console.log('Escaneie o QR Code com seu WhatsApp:');
-  qrcode.generate(qr, { small: true });
+  qrAtual = qr;
+  whatsappConectado = false;
+
+  console.log('Novo QR Code disponível na página protegida /qr.');
+
+  // Mantém o QR no log como alternativa
+  qrcodeTerminal.generate(qr, { small: true });
 });
 
 client.on('authenticated', () => {
+  qrAtual = null;
   console.log('WhatsApp autenticado com sucesso.');
 });
 
 client.on('ready', () => {
+  qrAtual = null;
+  whatsappConectado = true;
   console.log('WhatsApp conectado e pronto para uso!');
 });
 
 client.on('auth_failure', message => {
-  console.error('Falha na autenticação do WhatsApp:', message);
+  console.error('Falha na autenticação:', message);
 });
 
 client.on('disconnected', reason => {
+  whatsappConectado = false;
+  qrAtual = null;
   console.log('WhatsApp desconectado:', reason);
 });
 
-// Rota principal para verificar o servidor
-app.get('/', (req, res) => {
-  res.status(200).send('Servidor WhatsApp ativo.');
-});
-
-// Rota para verificar o status
-app.get('/status', (req, res) => {
-  res.json({
-    servidor: 'online',
-    whatsapp: client.info ? 'conectado' : 'aguardando conexão'
-  });
-});
-
-// Rota para enviar imagem a um grupo
+// Envia imagem para um grupo
 app.post('/enviar', async (req, res) => {
   const { grupo, foto, legenda } = req.body || {};
 
   if (!grupo || !foto) {
     return res.status(400).json({
       status: 'erro',
-      mensagem: 'Informe o identificador do grupo e a URL da foto.'
+      mensagem: 'Informe grupo e URL da foto.'
     });
   }
 
-  if (!client.info) {
+  if (!whatsappConectado) {
     return res.status(503).json({
       status: 'erro',
-      mensagem: 'O WhatsApp ainda não está conectado.'
+      mensagem: 'WhatsApp ainda não está conectado.'
     });
   }
 
@@ -115,22 +197,20 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`Servidor rodando na porta ${PORT}`);
 });
 
-// Inicializa o WhatsApp
+// Inicializa o WhatsApp depois de iniciar o servidor
 client.initialize().catch(error => {
-  console.error('Erro ao inicializar o WhatsApp:', error);
+  console.error('Erro ao inicializar WhatsApp:', error);
 });
 
-// Encerramento do processo
+// Encerramento
 process.on('SIGTERM', async () => {
   console.log('Encerrando servidor...');
 
   try {
     await client.destroy();
   } catch (error) {
-    console.error('Erro ao encerrar o WhatsApp:', error);
+    console.error('Erro ao encerrar WhatsApp:', error);
   }
 
-  server.close(() => {
-    process.exit(0);
-  });
+  server.close(() => process.exit(0));
 });
