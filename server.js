@@ -4,18 +4,19 @@ const qrcode = require('qrcode-terminal');
 const express = require('express');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(express.json());
 
 const chromePath = puppeteer.executablePath();
 
-console.log('Chrome esperado em:', chromePath);
-console.log('Chrome existe:', fs.existsSync(chromePath));
+console.log('Caminho do Chrome:', chromePath);
+console.log('Chrome encontrado:', fs.existsSync(chromePath));
 
 if (!fs.existsSync(chromePath)) {
   throw new Error(
-    `Chrome não encontrado em: ${chromePath}. Verifique a instalação do Puppeteer.`
+    `Chrome não encontrado: ${chromePath}. Verifique o build do Render.`
   );
 }
 
@@ -32,16 +33,16 @@ const client = new Client({
 });
 
 client.on('qr', qr => {
-  console.log('Escaneie o QR Code para conectar o WhatsApp:');
+  console.log('Escaneie o QR Code abaixo com o WhatsApp:');
   qrcode.generate(qr, { small: true });
-});
-
-client.on('ready', () => {
-  console.log('WhatsApp conectado!');
 });
 
 client.on('authenticated', () => {
   console.log('WhatsApp autenticado.');
+});
+
+client.on('ready', () => {
+  console.log('WhatsApp conectado!');
 });
 
 client.on('auth_failure', message => {
@@ -53,7 +54,7 @@ client.on('disconnected', reason => {
 });
 
 app.get('/', (req, res) => {
-  res.status(200).send('Servidor WhatsApp ativo.');
+  res.send('Servidor WhatsApp ativo.');
 });
 
 app.get('/status', (req, res) => {
@@ -69,7 +70,7 @@ app.post('/enviar', async (req, res) => {
   if (!grupo || !foto) {
     return res.status(400).json({
       status: 'erro',
-      mensagem: 'Informe grupo e foto (URL da imagem).'
+      mensagem: 'Informe grupo e URL da foto.'
     });
   }
 
@@ -108,15 +109,15 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 });
 
 client.initialize().catch(error => {
-  console.error('Erro ao inicializar o WhatsApp:', error);
+  console.error('Erro ao inicializar WhatsApp:', error);
 });
 
 process.on('SIGTERM', async () => {
-  console.log('Encerrando servidor...');
   try {
     await client.destroy();
   } catch (error) {
     console.error('Erro ao encerrar WhatsApp:', error);
   }
+
   server.close(() => process.exit(0));
 });
