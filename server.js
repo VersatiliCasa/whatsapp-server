@@ -1,7 +1,7 @@
 const { Client, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const express = require('express');
-const puppeteer = require('puppeteer'); // Importar puppeteer diretamente
+const puppeteer = require('puppeteer'); // usar puppeteer completo
 const app = express();
 app.use(express.json());
 
