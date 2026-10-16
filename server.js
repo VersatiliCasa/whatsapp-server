@@ -1,12 +1,13 @@
 const { Client, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const express = require('express');
+const puppeteer = require('puppeteer'); // Importar puppeteer diretamente
 const app = express();
 app.use(express.json());
 
-// Configuração do Puppeteer para Render
 const client = new Client({
   puppeteer: {
+    executablePath: puppeteer.executablePath(), // força usar o Chromium baixado
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   }
 });
@@ -15,7 +16,6 @@ client.on('qr', qr => qrcode.generate(qr, { small: true }));
 client.on('ready', () => console.log('WhatsApp conectado!'));
 client.initialize();
 
-// Endpoint para enviar mensagens com foto + legenda
 app.post('/enviar', async (req, res) => {
   const { grupo, foto, legenda } = req.body;
   try {
@@ -28,6 +28,5 @@ app.post('/enviar', async (req, res) => {
   }
 });
 
-// Usar a porta definida pelo Render
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
