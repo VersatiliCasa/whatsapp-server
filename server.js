@@ -5,6 +5,7 @@ const QRCode = require('qrcode');
 const express = require('express');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
+const { timingSafeEqual } = require('crypto');
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
@@ -151,14 +152,65 @@ client.on('disconnected', reason => {
   console.log('WhatsApp desconectado:', reason);
 });
 
-// Envia imagem para um grupo
+// Envia imagem para um grupo — exige autenticação servidor a servidor
 app.post('/enviar', async (req, res) => {
+  const expectedToken = process.env.WHATSAPP_API_TOKEN;
+
+  if (!expectedToken) {
+    return res.status(503).json({
+      status: 'erro',
+      mensagem: 'Autenticação do serviço não configurada.'
+    });
+  }
+
+  const authHeader = req.get('authorization') || '';
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+
+  if (!match) {
+    return res.status(401).json({
+      status: 'erro',
+      mensagem: 'Acesso não autorizado.'
+    });
+  }
+
+  const provided = Buffer.from(match[1].trim(), 'utf8');
+  const expected = Buffer.from(expectedToken, 'utf8');
+
+  if (
+    provided.length !== expected.length ||
+    !timingSafeEqual(provided, expected)
+  ) {
+    return res.status(401).json({
+      status: 'erro',
+      mensagem: 'Acesso não autorizado.'
+    });
+  }
+
   const { grupo, foto, legenda } = req.body || {};
 
-  if (!grupo || !foto) {
+  if (
+    typeof grupo !== 'string' || !grupo.trim() ||
+    typeof foto !== 'string' || !foto.trim()
+  ) {
     return res.status(400).json({
       status: 'erro',
       mensagem: 'Informe grupo e URL da foto.'
+    });
+  }
+
+  try {
+    const imageUrl = new URL(foto);
+
+    if (imageUrl.protocol !== 'https:') {
+      return res.status(400).json({
+        status: 'erro',
+        mensagem: 'A imagem precisa usar uma URL HTTPS.'
+      });
+    }
+  } catch {
+    return res.status(400).json({
+      status: 'erro',
+      mensagem: 'A URL da foto é inválida.'
     });
   }
 
@@ -172,8 +224,8 @@ app.post('/enviar', async (req, res) => {
   try {
     const media = await MessageMedia.fromUrl(foto);
 
-    await client.sendMessage(grupo, media, {
-      caption: legenda || ''
+    await client.sendMessage(grupo.trim(), media, {
+      caption: typeof legenda === 'string' ? legenda : ''
     });
 
     return res.json({
@@ -181,7 +233,10 @@ app.post('/enviar', async (req, res) => {
       mensagem: 'Mensagem enviada ao grupo.'
     });
   } catch (error) {
-    console.error('Erro ao enviar mensagem:', error);
+    console.error(
+      'Erro ao enviar mensagem:',
+      error instanceof Error ? error.name : 'erro desconhecido'
+    );
 
     return res.status(500).json({
       status: 'erro',
