@@ -7,7 +7,6 @@ const {
   RemoteAuth
 } = require('whatsapp-web.js');
 
-const qrcodeTerminal = require('qrcode-terminal');
 const QRCode = require('qrcode');
 const express = require('express');
 const puppeteer = require('puppeteer');
@@ -59,13 +58,15 @@ let client = null;
 let encerrando = false;
 let startupWatchdog = null;
 
-// Monitoramento de memória para diagnosticar o limite do plano Free.
+// Mede a memória do processo Node.js.
+// A memória RSS não inclui necessariamente todos os processos do Chrome.
 const memoryMonitor = setInterval(() => {
   const memory = process.memoryUsage();
-  const mb = (bytes) => Math.round(bytes / 1024 / 1024);
+  const mb = (bytes) =>
+    Math.round(bytes / 1024 / 1024);
 
   console.log(
-    `[Memória] RSS=${mb(memory.rss)}MB ` +
+    `[Memória Node.js] RSS=${mb(memory.rss)}MB ` +
     `Heap=${mb(memory.heapUsed)}MB ` +
     `Externo=${mb(memory.external)}MB`
   );
@@ -75,6 +76,7 @@ if (typeof memoryMonitor.unref === 'function') {
   memoryMonitor.unref();
 }
 
+// Comparação segura de tokens.
 function tokenCorreto(recebido, esperado) {
   if (
     typeof recebido !== 'string' ||
@@ -93,9 +95,14 @@ function tokenCorreto(recebido, esperado) {
   return timingSafeEqual(a, b);
 }
 
+// Autorização Bearer para o endpoint de envio.
 function envioAutorizado(req) {
-  const authorization = req.get('authorization') || '';
-  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  const authorization =
+    req.get('authorization') || '';
+
+  const match = authorization.match(
+    /^Bearer\s+(.+)$/i
+  );
 
   if (!match) {
     return false;
@@ -119,10 +126,17 @@ app.get('/', (req, res) => {
   res.status(200).send('Servidor WhatsApp ativo.');
 });
 
-// Página do QR Code protegida por token.
+// Página protegida do QR Code.
 app.get('/qr', async (req, res) => {
-  if (!tokenCorreto(req.query.token, process.env.QR_TOKEN)) {
-    return res.status(401).send('Acesso não autorizado.');
+  if (
+    !tokenCorreto(
+      req.query.token,
+      process.env.QR_TOKEN
+    )
+  ) {
+    return res.status(401).send(
+      'Acesso não autorizado.'
+    );
   }
 
   res.setHeader(
@@ -137,7 +151,8 @@ app.get('/qr', async (req, res) => {
       <html lang="pt-BR">
       <head>
         <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="viewport"
+              content="width=device-width, initial-scale=1">
         <title>WhatsApp conectado</title>
       </head>
       <body style="font-family:Arial;text-align:center;padding:30px">
@@ -154,14 +169,14 @@ app.get('/qr', async (req, res) => {
       <html lang="pt-BR">
       <head>
         <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="viewport"
+              content="width=device-width, initial-scale=1">
         <meta http-equiv="refresh" content="5">
         <title>Aguardando QR Code</title>
       </head>
       <body style="font-family:Arial;text-align:center;padding:30px">
         <h2>Aguardando QR Code...</h2>
         <p>A página será atualizada automaticamente.</p>
-        <p>Consulte os logs do Render caso continue assim.</p>
       </body>
       </html>
     `);
@@ -169,7 +184,7 @@ app.get('/qr', async (req, res) => {
 
   try {
     const image = await QRCode.toDataURL(qrAtual, {
-      width: 320,
+      width: 300,
       margin: 2
     });
 
@@ -178,16 +193,18 @@ app.get('/qr', async (req, res) => {
       <html lang="pt-BR">
       <head>
         <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="viewport"
+              content="width=device-width, initial-scale=1">
         <meta http-equiv="refresh" content="20">
         <title>Conectar WhatsApp</title>
       </head>
       <body style="font-family:Arial;text-align:center;padding:20px">
         <h2>Conectar WhatsApp</h2>
-        <p>Abra o WhatsApp no celular e escaneie o código.</p>
-        <img src="${image}" alt="QR Code do WhatsApp"
-             style="width:100%;max-width:320px;height:auto">
-        <p>Se o código expirar, aguarde a atualização.</p>
+        <p>Abra o WhatsApp no celular e escaneie este código.</p>
+        <img src="${image}"
+             alt="QR Code do WhatsApp"
+             style="width:100%;max-width:300px;height:auto">
+        <p>Se o código expirar, aguarde a atualização da página.</p>
       </body>
       </html>
     `);
@@ -203,7 +220,7 @@ app.get('/qr', async (req, res) => {
   }
 });
 
-// Status do servidor, cliente e MongoDB.
+// Estado do servidor, conexão e memória do Node.js.
 app.get('/status', (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
 
@@ -218,11 +235,13 @@ app.get('/status', (req, res) => {
     mongodb: mongoose.connection.readyState === 1
       ? 'conectado'
       : 'desconectado',
-    memoriaRSS_MB: Math.round(memory.rss / 1024 / 1024)
+    memoriaRSS_MB: Math.round(
+      memory.rss / 1024 / 1024
+    )
   });
 });
 
-// Envio de imagem com Bearer Token.
+// Envia uma imagem ao grupo informado.
 app.post('/enviar', async (req, res) => {
   if (!envioAutorizado(req)) {
     return res.status(401).json({
@@ -244,7 +263,10 @@ app.post('/enviar', async (req, res) => {
     });
   }
 
-  if (typeof foto !== 'string' || foto.length > 2048) {
+  if (
+    typeof foto !== 'string' ||
+    foto.length > 2048
+  ) {
     return res.status(400).json({
       status: 'erro',
       mensagem: 'Informe a URL HTTPS da imagem.'
@@ -275,7 +297,10 @@ app.post('/enviar', async (req, res) => {
 
   if (
     legenda !== undefined &&
-    (typeof legenda !== 'string' || legenda.length > 4096)
+    (
+      typeof legenda !== 'string' ||
+      legenda.length > 4096
+    )
   ) {
     return res.status(400).json({
       status: 'erro',
@@ -295,9 +320,11 @@ app.post('/enviar', async (req, res) => {
       fotoUrl.toString()
     );
 
-    await client.sendMessage(grupo.trim(), media, {
-      caption: legenda || ''
-    });
+    await client.sendMessage(
+      grupo.trim(),
+      media,
+      { caption: legenda || '' }
+    );
 
     return res.json({
       status: 'ok',
@@ -319,11 +346,17 @@ app.post('/enviar', async (req, res) => {
 // Inicia o servidor HTTP.
 const PORT = process.env.PORT || 3000;
 
-const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[Servidor] Rodando na porta ${PORT}`);
-});
+const server = app.listen(
+  PORT,
+  '0.0.0.0',
+  () => {
+    console.log(
+      `[Servidor] Rodando na porta ${PORT}`
+    );
+  }
+);
 
-// Conecta ao MongoDB e inicializa o WhatsApp.
+// Conecta ao MongoDB e inicia o WhatsApp.
 async function iniciarWhatsApp() {
   console.log('[MongoDB] Conectando...');
 
@@ -373,7 +406,8 @@ async function iniciarWhatsApp() {
         '--disable-sync',
         '--no-first-run',
         '--no-zygote',
-        '--renderer-process-limit=2'
+        '--renderer-process-limit=1',
+        '--disable-features=Translate,BackForwardCache'
       ]
     }
   });
@@ -394,15 +428,17 @@ async function iniciarWhatsApp() {
     qrAtual = qr;
     whatsappConectado = false;
 
-    console.log('[WhatsApp] Novo QR Code disponível em /qr.');
-
-    // Não imprime o QR completo nos logs para evitar excesso de saída.
-    qrcodeTerminal.generate(qr, { small: true });
+    console.log(
+      '[WhatsApp] Novo QR Code disponível em /qr.'
+    );
   });
 
   client.on('authenticated', () => {
     qrAtual = null;
-    console.log('[WhatsApp] Autenticado com sucesso.');
+
+    console.log(
+      '[WhatsApp] Autenticado com sucesso.'
+    );
   });
 
   client.on('ready', () => {
@@ -427,7 +463,7 @@ async function iniciarWhatsApp() {
     qrAtual = null;
 
     console.error(
-      '[WhatsApp] Falha de autenticação:',
+      '[WhatsApp] Falha na autenticação:',
       message
     );
   });
@@ -451,7 +487,7 @@ async function iniciarWhatsApp() {
 
   startupWatchdog = setTimeout(() => {
     console.warn(
-      '[WhatsApp] Ainda aguardando QR Code ou evento ready.'
+      '[WhatsApp] Continua aguardando QR Code ou evento ready.'
     );
   }, 60000);
 
