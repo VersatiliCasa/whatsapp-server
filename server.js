@@ -1,3 +1,4 @@
+
 'use strict';
 
 const {
@@ -15,7 +16,7 @@ const { timingSafeEqual } = require('crypto');
 const mongoose = require('mongoose');
 const { MongoStore } = require('wwebjs-mongo');
 
-// Variáveis obrigatórias configuradas em Render > Environment.
+// Variáveis obrigatórias configuradas no Render.
 const requiredEnv = [
   'MONGODB_URI',
   'QR_TOKEN',
@@ -28,22 +29,21 @@ const missingEnv = requiredEnv.filter(
 
 if (missingEnv.length > 0) {
   console.error(
-    'Variáveis obrigatórias ausentes:',
+    '[Configuração] Variáveis ausentes:',
     missingEnv.join(', ')
   );
   process.exit(1);
 }
 
 const app = express();
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '2mb' }));
 
-// Configuração da sessão persistente.
 const REMOTE_CLIENT_ID = 'versatili-whatsapp';
 const REMOTE_SESSION_NAME = `RemoteAuth-${REMOTE_CLIENT_ID}`;
 
 const chromePath = puppeteer.executablePath();
 
-console.log('[Inicialização] Caminho do Chrome:', chromePath);
+console.log('[Inicialização] Chrome:', chromePath);
 console.log(
   '[Inicialização] Chrome existe:',
   fs.existsSync(chromePath)
@@ -59,7 +59,22 @@ let client = null;
 let encerrando = false;
 let startupWatchdog = null;
 
-// Compara tokens de forma segura.
+// Monitoramento de memória para diagnosticar o limite do plano Free.
+const memoryMonitor = setInterval(() => {
+  const memory = process.memoryUsage();
+  const mb = (bytes) => Math.round(bytes / 1024 / 1024);
+
+  console.log(
+    `[Memória] RSS=${mb(memory.rss)}MB ` +
+    `Heap=${mb(memory.heapUsed)}MB ` +
+    `Externo=${mb(memory.external)}MB`
+  );
+}, 30000);
+
+if (typeof memoryMonitor.unref === 'function') {
+  memoryMonitor.unref();
+}
+
 function tokenCorreto(recebido, esperado) {
   if (
     typeof recebido !== 'string' ||
@@ -78,22 +93,21 @@ function tokenCorreto(recebido, esperado) {
   return timingSafeEqual(a, b);
 }
 
-// Protege o endpoint de envio por Bearer Token.
 function envioAutorizado(req) {
-  const cabecalho = req.get('authorization') || '';
-  const resultado = cabecalho.match(/^Bearer\s+(.+)$/i);
+  const authorization = req.get('authorization') || '';
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
 
-  if (!resultado) {
+  if (!match) {
     return false;
   }
 
   return tokenCorreto(
-    resultado[1],
+    match[1],
     process.env.WHATSAPP_API_TOKEN
   );
 }
 
-function limparAvisoInicializacao() {
+function limparWatchdog() {
   if (startupWatchdog) {
     clearTimeout(startupWatchdog);
     startupWatchdog = null;
@@ -105,7 +119,7 @@ app.get('/', (req, res) => {
   res.status(200).send('Servidor WhatsApp ativo.');
 });
 
-// Página protegida do QR Code.
+// Página do QR Code protegida por token.
 app.get('/qr', async (req, res) => {
   if (!tokenCorreto(req.query.token, process.env.QR_TOKEN)) {
     return res.status(401).send('Acesso não autorizado.');
@@ -147,15 +161,15 @@ app.get('/qr', async (req, res) => {
       <body style="font-family:Arial;text-align:center;padding:30px">
         <h2>Aguardando QR Code...</h2>
         <p>A página será atualizada automaticamente.</p>
-        <p>Se continuar assim, confira os Logs do Render.</p>
+        <p>Consulte os logs do Render caso continue assim.</p>
       </body>
       </html>
     `);
   }
 
   try {
-    const imagem = await QRCode.toDataURL(qrAtual, {
-      width: 350,
+    const image = await QRCode.toDataURL(qrAtual, {
+      width: 320,
       margin: 2
     });
 
@@ -170,10 +184,10 @@ app.get('/qr', async (req, res) => {
       </head>
       <body style="font-family:Arial;text-align:center;padding:20px">
         <h2>Conectar WhatsApp</h2>
-        <p>Abra o WhatsApp no celular e escaneie este código.</p>
-        <img src="${imagem}" alt="QR Code do WhatsApp"
-             style="width:100%;max-width:350px;height:auto">
-        <p>Se o código expirar, aguarde a atualização da página.</p>
+        <p>Abra o WhatsApp no celular e escaneie o código.</p>
+        <img src="${image}" alt="QR Code do WhatsApp"
+             style="width:100%;max-width:320px;height:auto">
+        <p>Se o código expirar, aguarde a atualização.</p>
       </body>
       </html>
     `);
@@ -189,9 +203,11 @@ app.get('/qr', async (req, res) => {
   }
 });
 
-// Estado do servidor, WhatsApp e banco.
+// Status do servidor, cliente e MongoDB.
 app.get('/status', (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
+
+  const memory = process.memoryUsage();
 
   res.json({
     servidor: 'online',
@@ -201,11 +217,12 @@ app.get('/status', (req, res) => {
     qrDisponivel: Boolean(qrAtual),
     mongodb: mongoose.connection.readyState === 1
       ? 'conectado'
-      : 'desconectado'
+      : 'desconectado',
+    memoriaRSS_MB: Math.round(memory.rss / 1024 / 1024)
   });
 });
 
-// Envia uma imagem para o grupo indicado.
+// Envio de imagem com Bearer Token.
 app.post('/enviar', async (req, res) => {
   if (!envioAutorizado(req)) {
     return res.status(401).json({
@@ -241,7 +258,7 @@ app.post('/enviar', async (req, res) => {
   } catch (_) {
     return res.status(400).json({
       status: 'erro',
-      mensagem: 'A URL da imagem é inválida.'
+      mensagem: 'URL da imagem inválida.'
     });
   }
 
@@ -278,11 +295,9 @@ app.post('/enviar', async (req, res) => {
       fotoUrl.toString()
     );
 
-    await client.sendMessage(
-      grupo.trim(),
-      media,
-      { caption: legenda || '' }
-    );
+    await client.sendMessage(grupo.trim(), media, {
+      caption: legenda || ''
+    });
 
     return res.json({
       status: 'ok',
@@ -290,7 +305,7 @@ app.post('/enviar', async (req, res) => {
     });
   } catch (error) {
     console.error(
-      '[Envio] Erro ao enviar mensagem:',
+      '[Envio] Erro:',
       error.message || error
     );
 
@@ -301,24 +316,24 @@ app.post('/enviar', async (req, res) => {
   }
 });
 
-// Inicia o servidor HTTP sem esperar pelo WhatsApp.
+// Inicia o servidor HTTP.
 const PORT = process.env.PORT || 3000;
 
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`[Servidor] Rodando na porta ${PORT}`);
 });
 
-// Conecta ao banco, verifica a sessão e inicializa o WhatsApp.
+// Conecta ao MongoDB e inicializa o WhatsApp.
 async function iniciarWhatsApp() {
-  console.log('[MongoDB] Iniciando conexão...');
+  console.log('[MongoDB] Conectando...');
 
   await mongoose.connect(process.env.MONGODB_URI, {
-    serverSelectionTimeoutMS: 15000
+    serverSelectionTimeoutMS: 15000,
+    connectTimeoutMS: 15000
   });
 
   console.log('[MongoDB] Conectado.');
 
-  // Diagnóstico da sessão remota no banco.
   const store = new MongoStore({ mongoose });
 
   console.log(
@@ -326,13 +341,13 @@ async function iniciarWhatsApp() {
     REMOTE_SESSION_NAME
   );
 
-  const sessaoExiste = await store.sessionExists({
+  const sessionExists = await store.sessionExists({
     session: REMOTE_SESSION_NAME
   });
 
   console.log(
     '[RemoteAuth] Sessão remota encontrada:',
-    sessaoExiste
+    sessionExists
   );
 
   console.log('[WhatsApp] Criando cliente...');
@@ -346,78 +361,87 @@ async function iniciarWhatsApp() {
     puppeteer: {
       executablePath: chromePath,
       headless: true,
+      protocolTimeout: 120000,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage'
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-extensions',
+        '--disable-background-networking',
+        '--disable-default-apps',
+        '--disable-sync',
+        '--no-first-run',
+        '--no-zygote',
+        '--renderer-process-limit=2'
       ]
     }
   });
 
-  // Registra o carregamento da página do WhatsApp Web.
   client.on('loading_screen', (percent, message) => {
     console.log(
-      `[WhatsApp] Carregando: ${percent}% - ${message}`
+      `[WhatsApp] Carregamento: ${percent}% - ${message}`
     );
   });
 
-  // Registra mudanças de estado.
   client.on('change_state', (state) => {
     console.log('[WhatsApp] Estado:', state);
   });
 
-  // QR Code novo.
   client.on('qr', (qr) => {
-    limparAvisoInicializacao();
+    limparWatchdog();
 
     qrAtual = qr;
     whatsappConectado = false;
 
     console.log('[WhatsApp] Novo QR Code disponível em /qr.');
+
+    // Não imprime o QR completo nos logs para evitar excesso de saída.
     qrcodeTerminal.generate(qr, { small: true });
   });
 
-  // Autenticação.
   client.on('authenticated', () => {
     qrAtual = null;
     console.log('[WhatsApp] Autenticado com sucesso.');
   });
 
-  // WhatsApp pronto para uso.
   client.on('ready', () => {
-    limparAvisoInicializacao();
+    limparWatchdog();
 
     qrAtual = null;
     whatsappConectado = true;
 
-    console.log('[WhatsApp] Conectado e pronto para uso.');
+    console.log(
+      '[WhatsApp] Conectado e pronto para uso.'
+    );
   });
 
-  // Confirma a gravação da sessão remota.
   client.on('remote_session_saved', () => {
-    console.log('[RemoteAuth] Sessão salva no MongoDB.');
+    console.log(
+      '[RemoteAuth] Sessão salva no MongoDB.'
+    );
   });
 
-  // Falha ao restaurar ou autenticar a sessão.
   client.on('auth_failure', (message) => {
     whatsappConectado = false;
     qrAtual = null;
 
     console.error(
-      '[WhatsApp] Falha na autenticação:',
+      '[WhatsApp] Falha de autenticação:',
       message
     );
   });
 
-  // Desconexão do WhatsApp.
   client.on('disconnected', (reason) => {
     whatsappConectado = false;
     qrAtual = null;
 
-    console.warn('[WhatsApp] Desconectado:', reason);
+    console.warn(
+      '[WhatsApp] Desconectado:',
+      reason
+    );
   });
 
-  // Outros erros emitidos pelo cliente.
   client.on('error', (error) => {
     console.error(
       '[WhatsApp] Erro do cliente:',
@@ -425,11 +449,9 @@ async function iniciarWhatsApp() {
     );
   });
 
-  // Aviso caso o cliente não gere QR nem fique pronto.
   startupWatchdog = setTimeout(() => {
     console.warn(
-      '[WhatsApp] Ainda aguardando QR Code ou evento ready. ' +
-      'Confira as mensagens de carregamento acima.'
+      '[WhatsApp] Ainda aguardando QR Code ou evento ready.'
     );
   }, 60000);
 
@@ -437,11 +459,15 @@ async function iniciarWhatsApp() {
     startupWatchdog.unref();
   }
 
-  console.log('[WhatsApp] Chamando client.initialize()...');
+  console.log(
+    '[WhatsApp] Chamando client.initialize()...'
+  );
 
   await client.initialize();
 
-  console.log('[WhatsApp] client.initialize() terminou.');
+  console.log(
+    '[WhatsApp] client.initialize() terminou.'
+  );
 }
 
 iniciarWhatsApp().catch((error) => {
@@ -456,7 +482,8 @@ async function encerrarServidor() {
   if (encerrando) return;
 
   encerrando = true;
-  limparAvisoInicializacao();
+  limparWatchdog();
+  clearInterval(memoryMonitor);
 
   console.log('[Servidor] Encerrando...');
 
