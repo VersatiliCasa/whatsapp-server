@@ -1,4 +1,3 @@
-
 'use strict';
 
 const {
@@ -15,7 +14,7 @@ const { timingSafeEqual } = require('crypto');
 const mongoose = require('mongoose');
 const { MongoStore } = require('wwebjs-mongo');
 
-// Variáveis obrigatórias configuradas no Render.
+// Variáveis obrigatórias.
 const requiredEnv = [
   'MONGODB_URI',
   'QR_TOKEN',
@@ -58,12 +57,9 @@ let client = null;
 let encerrando = false;
 let startupWatchdog = null;
 
-// Mede a memória do processo Node.js.
-// A memória RSS não inclui necessariamente todos os processos do Chrome.
 const memoryMonitor = setInterval(() => {
   const memory = process.memoryUsage();
-  const mb = (bytes) =>
-    Math.round(bytes / 1024 / 1024);
+  const mb = (bytes) => Math.round(bytes / 1024 / 1024);
 
   console.log(
     `[Memória Node.js] RSS=${mb(memory.rss)}MB ` +
@@ -76,7 +72,6 @@ if (typeof memoryMonitor.unref === 'function') {
   memoryMonitor.unref();
 }
 
-// Comparação segura de tokens.
 function tokenCorreto(recebido, esperado) {
   if (
     typeof recebido !== 'string' ||
@@ -95,14 +90,9 @@ function tokenCorreto(recebido, esperado) {
   return timingSafeEqual(a, b);
 }
 
-// Autorização Bearer para o endpoint de envio.
 function envioAutorizado(req) {
-  const authorization =
-    req.get('authorization') || '';
-
-  const match = authorization.match(
-    /^Bearer\s+(.+)$/i
-  );
+  const authorization = req.get('authorization') || '';
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
 
   if (!match) {
     return false;
@@ -126,17 +116,10 @@ app.get('/', (req, res) => {
   res.status(200).send('Servidor WhatsApp ativo.');
 });
 
-// Página protegida do QR Code.
+// QR Code protegido.
 app.get('/qr', async (req, res) => {
-  if (
-    !tokenCorreto(
-      req.query.token,
-      process.env.QR_TOKEN
-    )
-  ) {
-    return res.status(401).send(
-      'Acesso não autorizado.'
-    );
+  if (!tokenCorreto(req.query.token, process.env.QR_TOKEN)) {
+    return res.status(401).send('Acesso não autorizado.');
   }
 
   res.setHeader(
@@ -151,8 +134,7 @@ app.get('/qr', async (req, res) => {
       <html lang="pt-BR">
       <head>
         <meta charset="UTF-8">
-        <meta name="viewport"
-              content="width=device-width, initial-scale=1">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>WhatsApp conectado</title>
       </head>
       <body style="font-family:Arial;text-align:center;padding:30px">
@@ -169,8 +151,7 @@ app.get('/qr', async (req, res) => {
       <html lang="pt-BR">
       <head>
         <meta charset="UTF-8">
-        <meta name="viewport"
-              content="width=device-width, initial-scale=1">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta http-equiv="refresh" content="5">
         <title>Aguardando QR Code</title>
       </head>
@@ -193,16 +174,14 @@ app.get('/qr', async (req, res) => {
       <html lang="pt-BR">
       <head>
         <meta charset="UTF-8">
-        <meta name="viewport"
-              content="width=device-width, initial-scale=1">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta http-equiv="refresh" content="20">
         <title>Conectar WhatsApp</title>
       </head>
       <body style="font-family:Arial;text-align:center;padding:20px">
         <h2>Conectar WhatsApp</h2>
         <p>Abra o WhatsApp no celular e escaneie este código.</p>
-        <img src="${image}"
-             alt="QR Code do WhatsApp"
+        <img src="${image}" alt="QR Code do WhatsApp"
              style="width:100%;max-width:300px;height:auto">
         <p>Se o código expirar, aguarde a atualização da página.</p>
       </body>
@@ -220,28 +199,76 @@ app.get('/qr', async (req, res) => {
   }
 });
 
-// Estado do servidor, conexão e memória do Node.js.
+// Estado do servidor.
 app.get('/status', (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
 
   const memory = process.memoryUsage();
 
-  res.json({
+  return res.json({
     servidor: 'online',
-    whatsapp: whatsappConectado
-      ? 'conectado'
-      : 'aguardando conexão',
+    whatsapp: whatsappConectado ? 'conectado' : 'aguardando conexão',
     qrDisponivel: Boolean(qrAtual),
     mongodb: mongoose.connection.readyState === 1
       ? 'conectado'
       : 'desconectado',
-    memoriaRSS_MB: Math.round(
-      memory.rss / 1024 / 1024
-    )
+    memoriaRSS_MB: Math.round(memory.rss / 1024 / 1024)
   });
 });
 
-// Envia uma imagem ao grupo informado.
+// Lista grupos do WhatsApp, protegida pelo token.
+app.get('/grupos', async (req, res) => {
+  if (!envioAutorizado(req)) {
+    return res.status(401).json({
+      status: 'erro',
+      mensagem: 'Acesso não autorizado.'
+    });
+  }
+
+  if (!whatsappConectado || !client) {
+    return res.status(503).json({
+      status: 'erro',
+      mensagem: 'WhatsApp ainda não está conectado.'
+    });
+  }
+
+  try {
+    const grupos = await client.pupPage.evaluate(() => {
+      const chats = window
+        .require('WAWebCollections')
+        .Chat
+        .getModelsArray();
+
+      return chats
+        .filter((chat) => chat.groupMetadata)
+        .map((chat) => ({
+          nome: chat.formattedTitle || chat.name || '(sem nome)',
+          id: chat.id?._serialized || ''
+        }))
+        .filter((grupo) => grupo.id);
+    });
+
+    res.setHeader('Cache-Control', 'no-store');
+
+    return res.json({
+      status: 'ok',
+      total: grupos.length,
+      grupos
+    });
+  } catch (error) {
+    console.error(
+      '[Grupos] Erro ao consultar grupos:',
+      error?.stack || error
+    );
+
+    return res.status(500).json({
+      status: 'erro',
+      mensagem: 'Não foi possível consultar os grupos.'
+    });
+  }
+});
+
+// Envia texto ou imagem com legenda.
 app.post('/enviar', async (req, res) => {
   if (!envioAutorizado(req)) {
     return res.status(401).json({
@@ -263,48 +290,50 @@ app.post('/enviar', async (req, res) => {
     });
   }
 
+  // A imagem é opcional. Se informada, precisa ser uma string válida.
   if (
-    typeof foto !== 'string' ||
-    foto.length > 2048
+    foto !== undefined &&
+    foto !== null &&
+    (typeof foto !== 'string' || foto.length > 2048)
   ) {
     return res.status(400).json({
       status: 'erro',
-      mensagem: 'Informe a URL HTTPS da imagem.'
+      mensagem: 'A URL da imagem deve ter até 2048 caracteres.'
     });
   }
 
-  let fotoUrl;
+  let fotoUrl = null;
 
-  try {
-    fotoUrl = new URL(foto);
-  } catch (_) {
-    return res.status(400).json({
-      status: 'erro',
-      mensagem: 'URL da imagem inválida.'
-    });
+  if (typeof foto === 'string' && foto.trim()) {
+    try {
+      fotoUrl = new URL(foto.trim());
+    } catch {
+      return res.status(400).json({
+        status: 'erro',
+        mensagem: 'URL da imagem inválida.'
+      });
+    }
+
+    if (
+      fotoUrl.protocol !== 'https:' ||
+      fotoUrl.username ||
+      fotoUrl.password
+    ) {
+      return res.status(400).json({
+        status: 'erro',
+        mensagem: 'A imagem precisa usar uma URL HTTPS válida.'
+      });
+    }
   }
 
   if (
-    fotoUrl.protocol !== 'https:' ||
-    fotoUrl.username ||
-    fotoUrl.password
+    typeof legenda !== 'string' ||
+    !legenda.trim() ||
+    legenda.length > 4096
   ) {
     return res.status(400).json({
       status: 'erro',
-      mensagem: 'A imagem precisa usar uma URL HTTPS válida.'
-    });
-  }
-
-  if (
-    legenda !== undefined &&
-    (
-      typeof legenda !== 'string' ||
-      legenda.length > 4096
-    )
-  ) {
-    return res.status(400).json({
-      status: 'erro',
-      mensagem: 'A legenda deve ter até 4096 caracteres.'
+      mensagem: 'A mensagem deve ter conteúdo e até 4096 caracteres.'
     });
   }
 
@@ -315,26 +344,50 @@ app.post('/enviar', async (req, res) => {
     });
   }
 
-  try {
-    const media = await MessageMedia.fromUrl(
-      fotoUrl.toString()
-    );
+  const tipoEnvio = fotoUrl ? 'imagem' : 'texto';
 
-    await client.sendMessage(
-      grupo.trim(),
-      media,
-      { caption: legenda || '' }
-    );
+  try {
+    if (fotoUrl) {
+      const media = await MessageMedia.fromUrl(
+        fotoUrl.toString()
+      );
+
+      console.info('[Envio] Mídia preparada:', {
+        tipo: media.mimetype,
+        tamanhoBytes: media.data
+          ? Buffer.from(media.data, 'base64').length
+          : null,
+        arquivo: media.filename || null
+      });
+
+      await client.sendMessage(
+        grupo.trim(),
+        media,
+        { caption: legenda.trim() }
+      );
+    } else {
+      await client.sendMessage(
+        grupo.trim(),
+        legenda.trim()
+      );
+    }
+
+    console.info('[Envio] Mensagem enviada:', {
+      tipoEnvio,
+      grupo: grupo.trim()
+    });
 
     return res.json({
       status: 'ok',
       mensagem: 'Mensagem enviada ao grupo.'
     });
   } catch (error) {
-    console.error(
-      '[Envio] Erro:',
-      error.message || error
-    );
+    console.error('[Envio] Falha detalhada:', {
+      tipoEnvio,
+      name: error instanceof Error ? error.name : typeof error,
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined
+    });
 
     return res.status(500).json({
       status: 'erro',
@@ -346,15 +399,9 @@ app.post('/enviar', async (req, res) => {
 // Inicia o servidor HTTP.
 const PORT = process.env.PORT || 3000;
 
-const server = app.listen(
-  PORT,
-  '0.0.0.0',
-  () => {
-    console.log(
-      `[Servidor] Rodando na porta ${PORT}`
-    );
-  }
-);
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`[Servidor] Rodando na porta ${PORT}`);
+});
 
 // Conecta ao MongoDB e inicia o WhatsApp.
 async function iniciarWhatsApp() {
@@ -424,38 +471,27 @@ async function iniciarWhatsApp() {
 
   client.on('qr', (qr) => {
     limparWatchdog();
-
     qrAtual = qr;
     whatsappConectado = false;
 
-    console.log(
-      '[WhatsApp] Novo QR Code disponível em /qr.'
-    );
+    console.log('[WhatsApp] Novo QR Code disponível em /qr.');
   });
 
   client.on('authenticated', () => {
     qrAtual = null;
-
-    console.log(
-      '[WhatsApp] Autenticado com sucesso.'
-    );
+    console.log('[WhatsApp] Autenticado com sucesso.');
   });
 
   client.on('ready', () => {
     limparWatchdog();
-
     qrAtual = null;
     whatsappConectado = true;
 
-    console.log(
-      '[WhatsApp] Conectado e pronto para uso.'
-    );
+    console.log('[WhatsApp] Conectado e pronto para uso.');
   });
 
   client.on('remote_session_saved', () => {
-    console.log(
-      '[RemoteAuth] Sessão salva no MongoDB.'
-    );
+    console.log('[RemoteAuth] Sessão salva no MongoDB.');
   });
 
   client.on('auth_failure', (message) => {
@@ -472,10 +508,7 @@ async function iniciarWhatsApp() {
     whatsappConectado = false;
     qrAtual = null;
 
-    console.warn(
-      '[WhatsApp] Desconectado:',
-      reason
-    );
+    console.warn('[WhatsApp] Desconectado:', reason);
   });
 
   client.on('error', (error) => {
@@ -495,15 +528,11 @@ async function iniciarWhatsApp() {
     startupWatchdog.unref();
   }
 
-  console.log(
-    '[WhatsApp] Chamando client.initialize()...'
-  );
+  console.log('[WhatsApp] Chamando client.initialize()...');
 
   await client.initialize();
 
-  console.log(
-    '[WhatsApp] client.initialize() terminou.'
-  );
+  console.log('[WhatsApp] client.initialize() terminou.');
 }
 
 iniciarWhatsApp().catch((error) => {
