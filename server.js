@@ -1,3 +1,4 @@
+
 'use strict';
 
 const {
@@ -111,6 +112,23 @@ function limparWatchdog() {
   }
 }
 
+function statusServidor() {
+  const memory = process.memoryUsage();
+
+  return {
+    servidor: 'online',
+    whatsapp: whatsappConectado
+      ? 'conectado'
+      : 'aguardando conexão',
+    connected: whatsappConectado && Boolean(client),
+    qrDisponivel: Boolean(qrAtual),
+    mongodb: mongoose.connection.readyState === 1
+      ? 'conectado'
+      : 'desconectado',
+    memoriaRSS_MB: Math.round(memory.rss / 1024 / 1024)
+  };
+}
+
 // Página inicial.
 app.get('/', (req, res) => {
   res.status(200).send('Servidor WhatsApp ativo.');
@@ -199,21 +217,24 @@ app.get('/qr', async (req, res) => {
   }
 });
 
-// Estado do servidor.
+// Estado antigo do servidor.
 app.get('/status', (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
+  return res.json(statusServidor());
+});
 
-  const memory = process.memoryUsage();
+// Estado no formato esperado pela plataforma.
+app.get('/api/status', (req, res) => {
+  if (!envioAutorizado(req)) {
+    return res.status(401).json({
+      connected: false,
+      error: 'Acesso não autorizado.'
+    });
+  }
 
-  return res.json({
-    servidor: 'online',
-    whatsapp: whatsappConectado ? 'conectado' : 'aguardando conexão',
-    qrDisponivel: Boolean(qrAtual),
-    mongodb: mongoose.connection.readyState === 1
-      ? 'conectado'
-      : 'desconectado',
-    memoriaRSS_MB: Math.round(memory.rss / 1024 / 1024)
-  });
+  res.setHeader('Cache-Control', 'no-store');
+
+  return res.json(statusServidor());
 });
 
 // Lista grupos do WhatsApp, protegida pelo token.
@@ -268,38 +289,36 @@ app.get('/grupos', async (req, res) => {
   }
 });
 
-// Envia texto ou imagem com legenda.
-app.post('/enviar', async (req, res) => {
-  if (!envioAutorizado(req)) {
-    return res.status(401).json({
-      status: 'erro',
-      mensagem: 'Acesso não autorizado.'
-    });
-  }
-
-  const { grupo, foto, legenda } = req.body || {};
-
+// Valida os dados comuns de envio.
+function validarDadosEnvio(grupo, foto, legenda) {
   if (
     typeof grupo !== 'string' ||
     !grupo.trim() ||
     grupo.length > 256
   ) {
-    return res.status(400).json({
-      status: 'erro',
-      mensagem: 'Informe um identificador de grupo válido.'
-    });
+    return {
+      error: 'Informe um identificador de grupo válido.'
+    };
   }
 
-  // A imagem é opcional. Se informada, precisa ser uma string válida.
+  if (
+    typeof legenda !== 'string' ||
+    !legenda.trim() ||
+    legenda.length > 4096
+  ) {
+    return {
+      error: 'A mensagem deve ter conteúdo e até 4096 caracteres.'
+    };
+  }
+
   if (
     foto !== undefined &&
     foto !== null &&
     (typeof foto !== 'string' || foto.length > 2048)
   ) {
-    return res.status(400).json({
-      status: 'erro',
-      mensagem: 'A URL da imagem deve ter até 2048 caracteres.'
-    });
+    return {
+      error: 'A URL da imagem deve ter até 2048 caracteres.'
+    };
   }
 
   let fotoUrl = null;
@@ -308,10 +327,9 @@ app.post('/enviar', async (req, res) => {
     try {
       fotoUrl = new URL(foto.trim());
     } catch {
-      return res.status(400).json({
-        status: 'erro',
-        mensagem: 'URL da imagem inválida.'
-      });
+      return {
+        error: 'URL da imagem inválida.'
+      };
     }
 
     if (
@@ -319,37 +337,113 @@ app.post('/enviar', async (req, res) => {
       fotoUrl.username ||
       fotoUrl.password
     ) {
-      return res.status(400).json({
-        status: 'erro',
-        mensagem: 'A imagem precisa usar uma URL HTTPS válida.'
-      });
+      return {
+        error: 'A imagem precisa usar uma URL HTTPS válida.'
+      };
+    }
+
+    const hostname = fotoUrl.hostname.toLowerCase();
+
+    if (
+      hostname === 'localhost' ||
+      hostname.endsWith('.localhost') ||
+      hostname === '127.0.0.1' ||
+      hostname === '::1' ||
+      hostname.endsWith('.local')
+    ) {
+      return {
+        error: 'O endereço da imagem não é permitido.'
+      };
     }
   }
 
-  if (
-    typeof legenda !== 'string' ||
-    !legenda.trim() ||
-    legenda.length > 4096
-  ) {
-    return res.status(400).json({
-      status: 'erro',
-      mensagem: 'A mensagem deve ter conteúdo e até 4096 caracteres.'
-    });
+  return {
+    grupo: grupo.trim(),
+    legenda: legenda.trim(),
+    fotoUrl
+  };
+}
+
+// Envio compatível com a plataforma e com a rota antiga.
+async function processarEnvio(req, res, formatoNovo) {
+  if (!envioAutorizado(req)) {
+    return res.status(401).json(
+      formatoNovo
+        ? {
+            success: false,
+            outcome: 'not_sent',
+            error: 'Acesso não autorizado.'
+          }
+        : {
+            status: 'erro',
+            mensagem: 'Acesso não autorizado.'
+          }
+    );
+  }
+
+  const body = req.body || {};
+
+  const grupo = formatoNovo
+    ? body.groupId
+    : body.grupo;
+
+  const foto = formatoNovo
+    ? body.imageUrl
+    : body.foto;
+
+  const legenda = formatoNovo
+    ? body.message
+    : body.legenda;
+
+  const validacao = validarDadosEnvio(
+    grupo,
+    foto,
+    legenda
+  );
+
+  if (validacao.error) {
+    return res.status(400).json(
+      formatoNovo
+        ? {
+            success: false,
+            outcome: 'not_sent',
+            error: validacao.error
+          }
+        : {
+            status: 'erro',
+            mensagem: validacao.error
+          }
+    );
   }
 
   if (!whatsappConectado || !client) {
-    return res.status(503).json({
-      status: 'erro',
-      mensagem: 'WhatsApp ainda não está conectado.'
-    });
+    const mensagem = 'WhatsApp ainda não está conectado.';
+
+    return res.status(503).json(
+      formatoNovo
+        ? {
+            success: false,
+            outcome: 'not_sent',
+            error: mensagem
+          }
+        : {
+            status: 'erro',
+            mensagem
+          }
+    );
   }
 
-  const tipoEnvio = fotoUrl ? 'imagem' : 'texto';
+  const tipoEnvio = validacao.fotoUrl
+    ? 'imagem'
+    : 'texto';
 
-  try {
-    if (fotoUrl) {
-      const media = await MessageMedia.fromUrl(
-        fotoUrl.toString()
+  let media = null;
+
+  // Preparação da imagem acontece antes do envio.
+  if (validacao.fotoUrl) {
+    try {
+      media = await MessageMedia.fromUrl(
+        validacao.fotoUrl.toString()
       );
 
       console.info('[Envio] Mídia preparada:', {
@@ -359,41 +453,103 @@ app.post('/enviar', async (req, res) => {
           : null,
         arquivo: media.filename || null
       });
+    } catch (error) {
+      console.error('[Envio] Falha ao preparar imagem:', {
+        message: error instanceof Error
+          ? error.message
+          : String(error)
+      });
 
+      const mensagem = 'Não foi possível carregar a imagem da oferta.';
+
+      return res.status(400).json(
+        formatoNovo
+          ? {
+              success: false,
+              outcome: 'not_sent',
+              error: mensagem
+            }
+          : {
+              status: 'erro',
+              mensagem
+            }
+      );
+    }
+  }
+
+  try {
+    if (media) {
       await client.sendMessage(
-        grupo.trim(),
+        validacao.grupo,
         media,
-        { caption: legenda.trim() }
+        { caption: validacao.legenda }
       );
     } else {
       await client.sendMessage(
-        grupo.trim(),
-        legenda.trim()
+        validacao.grupo,
+        validacao.legenda
       );
     }
 
     console.info('[Envio] Mensagem enviada:', {
       tipoEnvio,
-      grupo: grupo.trim()
+      grupo: validacao.grupo
     });
 
-    return res.json({
-      status: 'ok',
-      mensagem: 'Mensagem enviada ao grupo.'
-    });
+    return res.status(200).json(
+      formatoNovo
+        ? {
+            success: true,
+            outcome: 'sent',
+            message: 'Mensagem enviada ao grupo.'
+          }
+        : {
+            status: 'ok',
+            mensagem: 'Mensagem enviada ao grupo.'
+          }
+    );
   } catch (error) {
     console.error('[Envio] Falha detalhada:', {
       tipoEnvio,
-      name: error instanceof Error ? error.name : typeof error,
-      message: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined
+      name: error instanceof Error
+        ? error.name
+        : typeof error,
+      message: error instanceof Error
+        ? error.message
+        : String(error),
+      stack: error instanceof Error
+        ? error.stack
+        : undefined
     });
 
-    return res.status(500).json({
-      status: 'erro',
-      mensagem: 'Falha ao enviar mensagem.'
-    });
+    // A chamada de envio pode ter sido aceita pelo WhatsApp
+    // antes de ocorrer uma falha de confirmação.
+    const mensagem =
+      'Não foi possível confirmar o resultado do envio. Verifique o grupo no WhatsApp.';
+
+    return res.status(500).json(
+      formatoNovo
+        ? {
+            success: false,
+            outcome: 'unknown',
+            error: mensagem
+          }
+        : {
+            status: 'erro',
+            mensagem
+          }
+    );
   }
+}
+
+// Nova rota utilizada pela plataforma.
+app.post('/api/send', async (req, res) => {
+  return processarEnvio(req, res, true);
+});
+
+// Rota antiga mantida para compatibilidade.
+app.post('/enviar', async (req, res) => {
+  return processarEnvio(req, res, false);
 });
 
 // Inicia o servidor HTTP.
